@@ -444,6 +444,33 @@ if st.button("Calculate bonuses", type="primary"):
         "Attributed Bench": "Bench",
     })
 
+    # Bonus (money) columns for the breakdown = hours × the DIRECT manager's direct rate.
+    def _rate(person_id, kind, bucket):
+        if pd.isna(person_id):
+            return 0.0
+        entry = active_rates.get(str(int(person_id)), {})
+        return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
+
+    for bkt in BUCKETS:
+        attribution_full[f"Bonus {bkt}"] = attribution_full.apply(
+            lambda r: r[bkt] * _rate(r["Direct Manager ID"], "direct", bkt), axis=1
+        )
+
+    # Add Direct/Indirect/Total Bonus per row
+    attribution_full["Direct Bonus"] = (
+        attribution_full["Bonus Billable"] + attribution_full["Bonus Non-Billable"] + attribution_full["Bonus Bench"]
+    )
+    # Indirect Bonus: for rows where employee is L2 or below, calculate PL's indirect earnings
+    attribution_full["Indirect Bonus"] = attribution_full.apply(
+        lambda r: (
+            r["Billable"] * _rate(r["PL (indirect) ID"], "indirect", "Billable")
+            + r["Non-Billable"] * _rate(r["PL (indirect) ID"], "indirect", "Non-Billable")
+            + r["Bench"] * _rate(r["PL (indirect) ID"], "indirect", "Bench")
+        ) if pd.notna(r["PL (indirect) ID"]) else 0.0,
+        axis=1,
+    )
+    attribution_full["Total Bonus"] = attribution_full["Direct Bonus"] + attribution_full["Indirect Bonus"]
+
     # id -> "Name" and "Level" for building the team-filter options
     earner_name = dict(zip(earners["Person ID"].astype(int), earners["Person Name"]))
     earner_level = dict(zip(earners["Person ID"].astype(int), earners["Level"]))
@@ -497,23 +524,12 @@ if "results" in st.session_state:
     file_tag = R["file_tag"]
     res_year = R["year"]
 
-    def _rate(person_id, kind, bucket):
-        if pd.isna(person_id):
-            return 0.0
-        entry = active_rates.get(str(int(person_id)), {})
-        return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
-
-    # Bonus (money) columns for the breakdown = hours × the DIRECT manager's direct rate.
-    for bkt in BUCKETS:
-        attribution_full[f"Bonus {bkt}"] = attribution_full.apply(
-            lambda r: r[bkt] * _rate(r["Direct Manager ID"], "direct", bkt), axis=1
-        )
-
     DISPLAY_COLS = [
-        "Month", "Employee ID", "Employee Name", "Employee Level",
+        "Month", "Employee Name", "Employee Level",
         "Director Name", "PL Name", "L1 Name", "L2 Name", "Present Days",
         "Share %", "Billable", "Non-Billable", "Bench",
         "Bonus Billable", "Bonus Non-Billable", "Bonus Bench",
+        "Direct Bonus", "Indirect Bonus",
     ]
     attribution_df = attribution_full[DISPLAY_COLS].reset_index(drop=True)
 
@@ -553,8 +569,19 @@ if "results" in st.session_state:
         "Bonus Billable": st.column_config.NumberColumn(help="MONEY = Billable hours × direct manager's Billable rate.", format="%.2f"),
         "Bonus Non-Billable": st.column_config.NumberColumn(help="MONEY = Non-Billable hours × direct manager's Non-Billable rate.", format="%.2f"),
         "Bonus Bench": st.column_config.NumberColumn(help="MONEY = Bench hours × direct manager's Bench rate.", format="%.2f"),
+        "Direct Bonus": st.column_config.NumberColumn(help="Total Direct Bonus = sum of Bonus Billable + Bonus Non-Billable + Bonus Bench for this segment.", format="%.2f"),
+        "Indirect Bonus": st.column_config.NumberColumn(help="Indirect Bonus earned by PL ancestor from this segment (if employee is L2 or below).", format="%.2f"),
+        "Total Bonus": st.column_config.NumberColumn(help="Direct Bonus + Indirect Bonus for this segment.", format="%.2f"),
     }
-    st.dataframe(attribution_df, use_container_width=True, hide_index=True, column_config=attr_cfg)
+    disabled_cols = {c: True for c in DISPLAY_COLS}
+    edited_df = st.data_editor(
+        attribution_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=attr_cfg,
+        disabled=disabled_cols,
+        key="per_emp_breakdown_editor",
+    )
 
     # ---------------- Manager team-contribution filter + scoped Excel download ----------------
     st.markdown("**Show a manager's team contribution and download it**")
@@ -581,6 +608,12 @@ if "results" in st.session_state:
         help="Shows only the reportees whose work contributes to the selected manager(s)' bonus. No unrelated data is included.",
         key="mgr_multiselect",
     )
+
+    def _rate(person_id, kind, bucket):
+        if pd.isna(person_id):
+            return 0.0
+        entry = active_rates.get(str(int(person_id)), {})
+        return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
 
     TEAM_COLS = ["Manager ID", "Manager", "Basis"] + DISPLAY_COLS
 
@@ -616,7 +649,14 @@ if "results" in st.session_state:
 
             sel_buf = io.BytesIO()
             with pd.ExcelWriter(sel_buf, engine="xlsxwriter") as w:
-                all_team.to_excel(w, sheet_name="Team Contribution", index=False)
+                _write_with_totals(w, all_team, "Team Contribution")
+                # Add bonus summary per selected manager
+                for mid in mgr_ids:
+                    mgr_totals = totals[totals["Earner ID"] == mid]
+                    if not mgr_totals.empty:
+                        nm = earner_name.get(mid, str(mid))
+                        sheet = f"{mid} {nm} Summary"[:31]
+                        _write_with_totals(w, mgr_totals, sheet)
                 used = set()
                 for mid in mgr_ids:
                     tdf = all_team[all_team["Manager ID"] == mid]
@@ -628,7 +668,7 @@ if "results" in st.session_state:
                     while sheet in used:
                         sheet = f"{base[:28]}_{k}"; k += 1
                     used.add(sheet)
-                    tdf.to_excel(w, sheet_name=sheet, index=False)
+                    _write_with_totals(w, tdf, sheet)
 
             tag = "-".join(str(e) for e in mgr_ids) if len(mgr_ids) <= 5 else f"{len(mgr_ids)}-managers"
             st.download_button(
@@ -640,12 +680,24 @@ if "results" in st.session_state:
             )
 
     # ---------------- Full Excel export ----------------
+    def _write_with_totals(writer, df: pd.DataFrame, sheet_name: str):
+        """Write DataFrame to Excel with a total row for numeric columns."""
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        if not numeric_cols:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            return
+        total_row = {col: ("TOTAL" if col == df.columns[0] else "") for col in df.columns}
+        for col in numeric_cols:
+            total_row[col] = df[col].sum()
+        df_with_total = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+        df_with_total.to_excel(writer, sheet_name=sheet_name, index=False)
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-        totals.to_excel(w, sheet_name="Earner Totals", index=False)
-        summary_by_basis.to_excel(w, sheet_name="Earner by Basis", index=False)
-        attribution_df.to_excel(w, sheet_name="Employee Breakdown", index=False)
-        rates_used_df.to_excel(w, sheet_name="Rates Used", index=False)
+        _write_with_totals(w, totals, "Earner Totals")
+        _write_with_totals(w, summary_by_basis, "Earner by Basis")
+        _write_with_totals(w, edited_df, "Employee Breakdown")
+        _write_with_totals(w, rates_used_df, "Rates Used")
     st.download_button(
         "Download results (Excel)",
         data=buf.getvalue(),

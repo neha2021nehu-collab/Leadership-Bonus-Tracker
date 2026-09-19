@@ -9,6 +9,12 @@ APPROVED = "approved"
 
 def load_timesheet(file) -> pd.DataFrame:
     df = pd.read_excel(file)
+    if "Month of Date" not in df.columns:
+        if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df["Month of Date"] = df["Date"].dt.strftime("%b")
+        else:
+            raise KeyError("Neither 'Month of Date' nor 'Date' column found in the timesheet file.")
     df["Month of Date"] = df["Month of Date"].ffill()
     df["Total Hours"] = pd.to_numeric(df["Total Hours"], errors="coerce").fillna(0)
     df["Bucket"] = df.apply(_bucket, axis=1)

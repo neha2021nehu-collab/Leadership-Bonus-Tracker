@@ -438,6 +438,12 @@ if st.button("Calculate bonuses", type="primary"):
         ["Director Name", "PL Name", "L1 Name", "L2 Name", "Employee ID", "Month"]
     ).reset_index(drop=True)
 
+    attribution_full = attribution_full.rename(columns={
+        "Attributed Billable": "Billable",
+        "Attributed Non-Billable": "Non-Billable",
+        "Attributed Bench": "Bench",
+    })
+
     # id -> "Name" and "Level" for building the team-filter options
     earner_name = dict(zip(earners["Person ID"].astype(int), earners["Person Name"]))
     earner_level = dict(zip(earners["Person ID"].astype(int), earners["Level"]))
@@ -497,16 +503,16 @@ if "results" in st.session_state:
         entry = active_rates.get(str(int(person_id)), {})
         return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
 
-    # Bonus (money) columns for the breakdown = attributed hours × the DIRECT manager's direct rate.
+    # Bonus (money) columns for the breakdown = hours × the DIRECT manager's direct rate.
     for bkt in BUCKETS:
         attribution_full[f"Bonus {bkt}"] = attribution_full.apply(
-            lambda r: r[f"Attributed {bkt}"] * _rate(r["Direct Manager ID"], "direct", bkt), axis=1
+            lambda r: r[bkt] * _rate(r["Direct Manager ID"], "direct", bkt), axis=1
         )
 
     DISPLAY_COLS = [
         "Month", "Employee ID", "Employee Name", "Employee Level",
         "Director Name", "PL Name", "L1 Name", "L2 Name", "Present Days",
-        "Share %", "Attributed Billable", "Attributed Non-Billable", "Attributed Bench",
+        "Share %", "Billable", "Non-Billable", "Bench",
         "Bonus Billable", "Bonus Non-Billable", "Bonus Bench",
     ]
     attribution_df = attribution_full[DISPLAY_COLS].reset_index(drop=True)
@@ -528,12 +534,12 @@ if "results" in st.session_state:
     st.subheader("Earner summary by basis")
     st.dataframe(summary_by_basis, use_container_width=True, hide_index=True)
 
-    # ---------------- Per-employee breakdown (attributed) ----------------
-    st.subheader("Per-employee breakdown (attributed)")
+    # ---------------- Per-employee breakdown ----------------
+    st.subheader("Per-employee breakdown")
     st.caption(
         "One row per employee-month **per manager they reported to**. "
-        "**Attributed** = the employee's approved *hours* × their day-share. "
-        "**Bonus** = those attributed hours × the **direct manager's** rate for that category "
+        "Hours shown are the employee's approved *hours* × their day-share. "
+        "**Bonus** = those hours × the **direct manager's** rate for that category "
         "(i.e. the money this employee's work earns their direct manager). "
         "The PL's separate indirect earning is shown in the Earner tables and the manager team-filter below."
     )
@@ -541,12 +547,12 @@ if "results" in st.session_state:
         "Employee Level": st.column_config.Column(help="This employee's level for the given segment (one below their manager)."),
         "Share %": st.column_config.NumberColumn(help="Percent of the month's calendar days the employee spent under this manager chain.", format="%.1f"),
         "Present Days": st.column_config.NumberColumn(help="Employee's attendance for the month (P=1, 0.5P=0.5, else 0). Same for all segment rows of an employee-month."),
-        "Attributed Billable": st.column_config.NumberColumn(help="Approved Billable HOURS × Share%.", format="%.2f"),
-        "Attributed Non-Billable": st.column_config.NumberColumn(help="Approved Non-Billable HOURS × Share%.", format="%.2f"),
-        "Attributed Bench": st.column_config.NumberColumn(help="Approved Bench HOURS × Share%.", format="%.2f"),
-        "Bonus Billable": st.column_config.NumberColumn(help="MONEY = Attributed Billable hours × direct manager's Billable rate.", format="%.2f"),
-        "Bonus Non-Billable": st.column_config.NumberColumn(help="MONEY = Attributed Non-Billable hours × direct manager's Non-Billable rate.", format="%.2f"),
-        "Bonus Bench": st.column_config.NumberColumn(help="MONEY = Attributed Bench hours × direct manager's Bench rate.", format="%.2f"),
+        "Billable": st.column_config.NumberColumn(help="Approved Billable HOURS × Share%.", format="%.2f"),
+        "Non-Billable": st.column_config.NumberColumn(help="Approved Non-Billable HOURS × Share%.", format="%.2f"),
+        "Bench": st.column_config.NumberColumn(help="Approved Bench HOURS × Share%.", format="%.2f"),
+        "Bonus Billable": st.column_config.NumberColumn(help="MONEY = Billable hours × direct manager's Billable rate.", format="%.2f"),
+        "Bonus Non-Billable": st.column_config.NumberColumn(help="MONEY = Non-Billable hours × direct manager's Non-Billable rate.", format="%.2f"),
+        "Bonus Bench": st.column_config.NumberColumn(help="MONEY = Bench hours × direct manager's Bench rate.", format="%.2f"),
     }
     st.dataframe(attribution_df, use_container_width=True, hide_index=True, column_config=attr_cfg)
 
@@ -592,7 +598,7 @@ if "results" in st.session_state:
         # indirect rate on Indirect rows.
         for bkt in BUCKETS:
             team[f"Bonus {bkt}"] = team.apply(
-                lambda r: r[f"Attributed {bkt}"] * _rate(mid, "direct" if r["Basis"] == "Direct" else "indirect", bkt),
+                lambda r: r[bkt] * _rate(mid, "direct" if r["Basis"] == "Direct" else "indirect", bkt),
                 axis=1,
             )
         return team[TEAM_COLS]

@@ -7,17 +7,56 @@ BENCH_PROJECT = "Certification & Upskilling"
 APPROVED = "approved"
 
 
+# def load_timesheet(file) -> pd.DataFrame:
+#     df = pd.read_excel(file)
+#     if "Month of Date" not in df.columns:
+#         if "Date" in df.columns:
+#             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+#             df["Month of Date"] = df["Date"].dt.strftime("%b")
+#         else:
+#             raise KeyError("Neither 'Month of Date' nor 'Date' column found in the timesheet file.")
+#     df["Month of Date"] = df["Month of Date"].ffill()
+#     df["Total Hours"] = pd.to_numeric(df["Total Hours"], errors="coerce").fillna(0)
+#     df["Bucket"] = df.apply(_bucket, axis=1)
+#     return df
 def load_timesheet(file) -> pd.DataFrame:
     df = pd.read_excel(file)
-    if "Month of Date" not in df.columns:
-        if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-            df["Month of Date"] = df["Date"].dt.strftime("%b")
-        else:
-            raise KeyError("Neither 'Month of Date' nor 'Date' column found in the timesheet file.")
-    df["Month of Date"] = df["Month of Date"].ffill()
-    df["Total Hours"] = pd.to_numeric(df["Total Hours"], errors="coerce").fillna(0)
+
+    # ---------------------------------------------------------
+    # 1. Make sure we have an actual date column
+    # ---------------------------------------------------------
+    if "Date" not in df.columns:
+        raise KeyError(
+            "The timesheet file must contain a 'Date' column "
+            "for day-wise hour allocation."
+        )
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    # Remove rows where the date could not be determined
+    df = df.dropna(subset=["Date"]).copy()
+
+    # Normalize the date so that only YYYY-MM-DD matters
+    df["Work Date"] = df["Date"].dt.normalize()
+
+    # ---------------------------------------------------------
+    # 2. Derive month information from the actual date
+    # ---------------------------------------------------------
+    df["Month of Date"] = df["Work Date"].dt.strftime("%b")
+
+    # ---------------------------------------------------------
+    # 3. Normalize hours
+    # ---------------------------------------------------------
+    df["Total Hours"] = pd.to_numeric(
+        df["Total Hours"],
+        errors="coerce"
+    ).fillna(0)
+
+    # ---------------------------------------------------------
+    # 4. Categorize the timesheet row
+    # ---------------------------------------------------------
     df["Bucket"] = df.apply(_bucket, axis=1)
+
     return df
 
 

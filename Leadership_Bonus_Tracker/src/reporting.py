@@ -95,3 +95,123 @@ def manager_segments_for_month(reporting_df: pd.DataFrame, year: int, month_num:
 
     cols = ["Employee ID", "First Name", "Last Name", "Manager ID", "Manager Name", "Days", "Fraction"]
     return pd.DataFrame(records, columns=cols)
+
+def manager_by_day_for_month(
+    reporting_df: pd.DataFrame,
+    year: int,
+    month_num: int,
+) -> pd.DataFrame:
+    """
+    Return the manager assignment for every calendar day
+    for every employee.
+
+    One row per:
+
+        Employee + Date
+
+    Columns:
+        Employee ID
+        First Name
+        Last Name
+        Date
+        Manager ID
+        Manager Name
+
+    A reporting change becomes effective from the start
+    of its calendar date.
+
+    Days before the employee's first manager assignment
+    have no manager and are excluded.
+    """
+
+    month_start = pd.Timestamp(
+        year=year,
+        month=month_num,
+        day=1,
+    )
+
+    days_in_month = month_start.days_in_month
+
+    day_starts = [
+        month_start + pd.Timedelta(days=d)
+        for d in range(days_in_month)
+    ]
+
+    records = []
+
+    # Process each employee independently
+    for emp_id, grp in (
+        reporting_df
+        .sort_values("Modified Time")
+        .groupby("Employee ID")
+    ):
+
+        grp = grp.sort_values("Modified Time").reset_index(drop=True)
+
+        # Normalize reporting timestamps to calendar dates.
+        effective_dates = (
+            grp["Modified Time"]
+            .dt.normalize()
+            .tolist()
+        )
+
+        manager_ids = grp["Manager ID"].tolist()
+        manager_names = grp["Manager Name"].tolist()
+
+        first_name = (
+            grp["First Name"].iloc[0]
+            if "First Name" in grp.columns
+            else None
+        )
+
+        last_name = (
+            grp["Last Name"].iloc[0]
+            if "Last Name" in grp.columns
+            else None
+        )
+
+        for current_date in day_starts:
+
+            active_idx = None
+
+            # Find the latest reporting change whose
+            # effective date is <= current date.
+            for i, effective_date in enumerate(effective_dates):
+
+                if effective_date <= current_date:
+                    active_idx = i
+                else:
+                    break
+
+            # No manager assignment yet
+            if active_idx is None:
+                continue
+
+            manager_id = manager_ids[active_idx]
+            manager_name = manager_names[active_idx]
+
+            if pd.isna(manager_id):
+                continue
+
+            records.append(
+                {
+                    "Employee ID": int(emp_id),
+                    "First Name": first_name,
+                    "Last Name": last_name,
+                    "Date": current_date,
+                    "Manager ID": int(manager_id),
+                    "Manager Name": manager_name,
+                }
+            )
+
+    return pd.DataFrame(
+        records,
+        columns=[
+            "Employee ID",
+            "First Name",
+            "Last Name",
+            "Date",
+            "Manager ID",
+            "Manager Name",
+        ],
+    )

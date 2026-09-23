@@ -1,14 +1,15 @@
+from asyncio import streams
 import io
 import pandas as pd
 import streamlit as st
 
-from src.reporting import load_reporting, manager_as_of, manager_segments_for_month
+from src.reporting import load_reporting, manager_as_of, manager_segments_for_month, manager_by_day_for_month
 from src.timesheet import load_timesheet, available_months, hours_for_month, MONTH_TO_NUM
 from src.hierarchy import build_hierarchy
 from src.bonus import (
-    load_rates, save_rates, empty_rate_set, BUCKETS,
-    earning_people, build_employee_view, apply_rates_month, earner_summary, earner_totals,
-    orphan_hours, attribution_detail,
+    load_rates, save_rates,  BUCKETS,
+    earning_people, build_employee_view,  earner_summary, earner_totals,
+    orphan_hours, apply_rates_manager_hours
 )
 from src.attendance import load_attendance, parse_filename
 
@@ -42,6 +43,7 @@ if not (reporting_file and timesheet_file):
 
 reporting_df = load_reporting(reporting_file)
 timesheet_df = load_timesheet(timesheet_file)
+
 
 st.success(f"Loaded {len(reporting_df)} audit rows and {len(timesheet_df)} timesheet rows.")
 
@@ -80,8 +82,12 @@ if attendance_files:
         if mn in [MONTH_TO_NUM[m] for m in selected_months]:
             try:
                 attendance_by_month[mn] = load_attendance(f, f.name)
+                
             except Exception as e:
                 st.warning(f"Could not read {f.name}: {e}")
+    
+
+    
 
 missing_att = [m for m in selected_months if MONTH_TO_NUM[m] not in attendance_by_month]
 if missing_att:
@@ -92,6 +98,8 @@ per_month_frames = []
 hierarchy_by_month: dict[str, pd.DataFrame] = {}
 hours_by_month: dict[str, pd.DataFrame] = {}
 segments_by_month: dict[str, pd.DataFrame] = {}
+manager_final_by_month = {}
+daily_attribution_by_month = {}
 for m in selected_months:
     mn = MONTH_TO_NUM[m]
     month_end = pd.Timestamp(year=int(year), month=mn, day=1) + pd.offsets.MonthEnd(0)
@@ -101,12 +109,374 @@ for m in selected_months:
     hours_df = hours_for_month(timesheet_df, m)
     hours_by_month[m] = hours_df
     segments_by_month[m] = manager_segments_for_month(reporting_df, int(year), mn)
+    
+    #Neha 
+    manager_days = manager_by_day_for_month(
+    reporting_df,
+    int(year),
+    mn
+    )
+
+    attendance_df = attendance_by_month.get(mn)
+
+    if attendance_df is not None:
+        daily_manager_attendance = manager_days.merge(
+            attendance_df[
+                ["Employee ID", "Date", "Attendance"]
+            ],
+            on=["Employee ID", "Date"],
+            how="left"
+        )
+    else:
+        daily_manager_attendance = manager_days.copy()
+        daily_manager_attendance["Attendance"] = 0
+
+    # timesheet_daily = timesheet_df.copy()
+
+    # daily_manager_timesheet = daily_manager_attendance.merge(
+    #     timesheet_daily,
+    #     left_on=["Employee ID", "Date"],
+    #     right_on=["Employee ID", "Work Date"],
+    #     how="left"
+    # )
+
+    # Aggregate Timesheet entries to one row per employee per day
+#     timesheet_daily = (
+#         timesheet_df
+#         .groupby(
+#             ["Employee ID", "Work Date", "Bucket"],
+#             as_index=False
+#         )["Total Hours"]
+#         .sum()
+#     )
+
+#     # Merge the aggregated daily Timesheet data
+#     daily_manager_timesheet = daily_manager_attendance.merge(
+#         timesheet_daily,
+#         left_on=["Employee ID", "Date"],
+#         right_on=["Employee ID", "Work Date"],
+#         how="left"
+# )
+
+    # Aggregate Timesheet entries to one row per employee per day
+    # with separate columns for each bucket.
+    timesheet_daily = (
+        timesheet_df
+        .pivot_table(
+            index=["Employee ID", "Work Date"],
+            columns="Bucket",
+            values="Total Hours",
+            aggfunc="sum",
+            fill_value=0
+        )
+        .reset_index()
+    )
+
+    timesheet_daily.columns.name = None
+
+    # Make sure all buckets exist
+    for bucket in ["Billable", "Non-Billable", "Bench"]:
+        if bucket not in timesheet_daily.columns:
+            timesheet_daily[bucket] = 0.0
+
+    # Merge one Timesheet row per employee/date
+    daily_manager_timesheet = daily_manager_attendance.merge(
+        timesheet_daily,
+        left_on=["Employee ID", "Date"],
+        right_on=["Employee ID", "Work Date"],
+        how="left"
+    )
+
+    # Fill missing hours with zero
+    for bucket in ["Billable", "Non-Billable", "Bench"]:
+        daily_manager_timesheet[bucket] = (
+            pd.to_numeric(
+                daily_manager_timesheet[bucket],
+                errors="coerce"
+            ).fillna(0)
+        )
+
+    # Total actual hours for the day
+    daily_manager_timesheet["Total Hours"] = (
+        daily_manager_timesheet["Billable"]
+        + daily_manager_timesheet["Non-Billable"]
+        + daily_manager_timesheet["Bench"]
+    )
+
+    daily_manager_timesheet["Attendance"] = (
+        pd.to_numeric(
+            daily_manager_timesheet["Attendance"],
+            errors="coerce"
+        )
+        .fillna(0)
+    )
+
+    daily_manager_timesheet["Expected Hours"] = (
+        daily_manager_timesheet["Attendance"] * 8
+    )
+
+    daily_manager_timesheet["Actual Hours"] = (
+        pd.to_numeric(
+            daily_manager_timesheet["Total Hours"],
+            errors="coerce"
+        )
+        .fillna(0)
+    )
+
+    daily_manager_timesheet["Hours Status"] = "Normal"
+
+    daily_manager_timesheet.loc[
+        daily_manager_timesheet["Actual Hours"] < daily_manager_timesheet["Expected Hours"],
+        "Hours Status"
+    ] = "Below Expected"
+
+    daily_manager_timesheet.loc[
+        daily_manager_timesheet["Actual Hours"] > daily_manager_timesheet["Expected Hours"],
+        "Hours Status"
+    ] = "Above Expected"
+
+    manager_present_days = (
+    daily_manager_timesheet
+    .groupby(
+        [
+            "Employee ID",
+            "First Name",
+            "Last Name",
+            "Manager ID",
+            "Manager Name"
+        ],
+        as_index=False
+    )["Attendance"]
+    .sum()
+    .rename(columns={
+        "First Name": "First Name",
+        "Last Name": "Last Name",
+        "Attendance": "Present Days"
+    })
+
+)
+
+    manager_present_days["Expected Hours"] = (
+    manager_present_days["Present Days"] * 8
+    )
+
+
+    manager_actual_hours = (
+        daily_manager_timesheet
+        .groupby(
+            [
+                "Employee ID",
+                "First Name",
+                "Last Name",
+                "Manager ID",
+                "Manager Name"
+            ],
+            as_index=False
+        )["Actual Hours"]
+        .sum()
+        .rename(columns={
+            "First Name_x": "First Name"
+            
+        })
+    )
+
+    manager_category_hours = (
+    daily_manager_timesheet
+    .groupby(
+        [
+            "Employee ID",
+            "First Name",
+            "Last Name",
+            "Manager ID",
+            "Manager Name"
+        ],
+        as_index=False
+    )[
+        ["Billable", "Non-Billable", "Bench"]
+    ]
+    .sum()
+    .rename(columns={
+        "Billable": "Billable Hours",
+        "Non-Billable": "Non-Billable Hours",
+        "Bench": "Bench Hours"
+    })
+)
+    
+    manager_final = manager_present_days.merge(
+    manager_category_hours,
+    on=[
+        "Employee ID",
+        "First Name",
+        "Last Name",
+        "Manager ID",
+        "Manager Name"
+    ],
+    how="left"
+)
+    manager_final_by_month[m] = manager_final
+
+    for col in ["Billable Hours", "Non-Billable Hours", "Bench Hours"]:
+        if col in manager_final.columns:
+            manager_final[col] = manager_final[col].fillna(0)
+    manager_final["Actual Hours"] = (
+    manager_final["Billable Hours"]
+    + manager_final["Non-Billable Hours"]
+    + manager_final["Bench Hours"]
+
+
+
+)
+    manager_final["Hours Review"] = "OK"
+
+    manager_final.loc[
+        manager_final["Actual Hours"] < manager_final["Expected Hours"],
+        "Hours Review"
+    ] = "Review - Below Expected"
+
+    manager_final.loc[
+        manager_final["Actual Hours"] > manager_final["Expected Hours"],
+        "Hours Review"
+    ] = "Review - Above Expected"
+
+# ---------------------------------------------------------
+# NEW: Daily/Manager attribution basis
+# ---------------------------------------------------------
+    daily_attr = manager_final.copy()
+
+    daily_attr["Month"] = m
+
+    # Get hierarchy information for each manager
+    manager_lookup = hierarchy_by_month[m][
+        ["Person ID", "Level", "PL ID", "Director Name", "PL Name", "L1 Name", "L2 Name"]
+    ].copy()
+
+    manager_lookup = manager_lookup.rename(
+        columns={
+            "Person ID": "Manager ID",
+            "Level": "Manager Level",
+            "PL ID": "PL (indirect) ID",
+        }
+    )
+
+    daily_attr = daily_attr.merge(
+        manager_lookup,
+        on="Manager ID",
+        how="left",
+    )
+
+    # Employee name
+    daily_attr["Employee Name"] = (
+        daily_attr["First Name"].fillna("").astype(str).str.strip()
+        + " "
+        + daily_attr["Last Name"].fillna("").astype(str).str.strip()
+    ).str.strip()
+
+    # Employee is one level below their direct manager
+    next_level = {
+        "Director": "PL",
+        "PL": "L1",
+        "L1": "L2",
+        "L2": "L3",
+    }
+
+    daily_attr["Employee Level"] = daily_attr["Manager Level"].map(next_level)
+
+    # A Director/PL does not get an indirect PL attribution
+    daily_attr["PL (indirect) ID"] = daily_attr["PL (indirect) ID"].where(
+        ~daily_attr["Manager Level"].isin(["Director", "PL"]),
+        pd.NA,
+    )
+
+    # Rename the actual-hour buckets to the names we will use for bonus calculation
+    daily_attr = daily_attr.rename(
+        columns={
+            "Billable Hours": "Billable",
+            "Non-Billable Hours": "Non-Billable",
+            "Bench Hours": "Bench",
+        }
+    )
+
+    daily_attribution_by_month[m] = daily_attr
+    # #Temporary
+    # st.write("NEW Daily/Manager Attribution")
+    # st.dataframe(
+    #     daily_attribution_by_month[m][
+    #         [
+    #             "Month",
+    #             "Employee ID",
+    #             "Employee Name",
+    #             "Employee Level",
+    #             "Manager ID",
+    #             "Manager Name",
+    #             "Manager Level",
+    #             "Present Days",
+    #             "Expected Hours",
+    #             "Actual Hours",
+    #             "Billable",
+    #             "Non-Billable",
+    #             "Bench",
+    #             "PL (indirect) ID",
+    #         ]
+    #     ],
+    #     use_container_width=True,
+    # )
+
+    # st.write("Final Manager-Level Hours")
+    # st.dataframe(manager_final)
+    # st.write("Actual Hours by Category and Manager")
+    # st.dataframe(manager_category_hours)
+    
+    # st.write("Actual Hours by Manager")
+    # st.dataframe(manager_actual_hours)
+    
+    # st.write("Present Days and Expected Hours by Manager")
+    # st.dataframe(manager_present_days)
+    
+    # st.write("Present Days by Manager")
+    # st.dataframe(manager_present_days)
+
+    
+    # st.write(f"Manager + Attendance + Timesheet — {m}")
+
+    # st.dataframe(
+    #     daily_manager_timesheet,
+    #     use_container_width=True
+    # )
+
+
+    
+    
+    #Temporary
+    
+
     ev = build_employee_view(hours_df, hier)
     ev["Month"] = m
+    # if mn in attendance_by_month:
+    #     ev = ev.merge(
+    #         attendance_by_month[mn][["Employee ID", "Present Days"]],
+    #         on="Employee ID", how="left",
+    #     )
+    # else:
+    #     ev["Present Days"] = None
+
+    #Neha
     if mn in attendance_by_month:
+        # Temporary compatibility layer:
+        # convert day-wise attendance back into monthly Present Days.
+        #
+        # This is NOT the final calculation logic.
+        # Later, Present Days will be calculated per manager segment.
+        monthly_attendance = (
+            attendance_by_month[mn]
+            .groupby("Employee ID", as_index=False)["Attendance"]
+            .sum()
+            .rename(columns={"Attendance": "Present Days"})
+        )
+
         ev = ev.merge(
-            attendance_by_month[mn][["Employee ID", "Present Days"]],
-            on="Employee ID", how="left",
+            monthly_attendance,
+            on="Employee ID",
+            how="left",
         )
     else:
         ev["Present Days"] = None
@@ -383,93 +753,342 @@ if not orphans.empty:
         st.caption("These IDs never appear in the reporting audit log as of the selected month-end, so they can't be placed in the hierarchy. Fix the reporting file to include them, or ignore if intended.")
         st.dataframe(orphans, use_container_width=True, hide_index=True)
 
-# ---------------- Mid-month manager change transparency ----------------
-_split_rows = []
-for m in selected_months:
-    seg = segments_by_month[m]
-    hrs_ids = set(hours_by_month[m]["Employee ID"].astype(int))
-    counts = seg.groupby("Employee ID").size()
-    fsum = seg.groupby("Employee ID")["Fraction"].sum()
-    for eid in hrs_ids:
-        if counts.get(eid, 0) > 1 or fsum.get(eid, 1) < 0.999:
-            for _, s in seg[seg["Employee ID"] == eid].iterrows():
-                _split_rows.append({
-                    "Month": m,
-                    "Employee ID": eid,
-                    "Name": f"{s['First Name']} {s['Last Name']}",
-                    "Manager ID": int(s["Manager ID"]),
-                    "Manager": s["Manager Name"],
-                    "Days": int(s["Days"]),
-                    "Share %": round(s["Fraction"] * 100, 1),
-                })
-if _split_rows:
-    split_df = pd.DataFrame(_split_rows)
-    n_split = split_df["Employee ID"].nunique()
-    with st.expander(f"ℹ️ {n_split} employee(s) changed manager mid-month — their hours are split by days under each manager", expanded=False):
-        st.caption("Each employee's monthly hours are pro-rated by the number of calendar days spent under each manager (a reporting change takes effect on its date). Rows summing to under 100% had unassigned days that were dropped.")
-        st.dataframe(split_df, use_container_width=True, hide_index=True)
+# # ---------------- Mid-month manager change transparency ----------------
+# _split_rows = []
+
+# for m in selected_months:
+#     seg = segments_by_month[m]
+#     hrs_ids = set(hours_by_month[m]["Employee ID"].astype(int))
+#     counts = seg.groupby("Employee ID").size()
+#     fsum = seg.groupby("Employee ID")["Fraction"].sum()
+#     for eid in hrs_ids:
+#         if counts.get(eid, 0) > 1 or fsum.get(eid, 1) < 0.999:
+#             for _, s in seg[seg["Employee ID"] == eid].iterrows():
+#                 _split_rows.append({
+#                     "Month": m,
+#                     "Employee ID": eid,
+#                     "Name": f"{s['First Name']} {s['Last Name']}",
+#                     "Manager ID": int(s["Manager ID"]),
+#                     "Manager": s["Manager Name"],
+#                     "Days": int(s["Days"]),
+#                     "Share %": round(s["Fraction"] * 100, 1),
+#                 })
+# if _split_rows:
+#     split_df = pd.DataFrame(_split_rows)
+#     n_split = split_df["Employee ID"].nunique()
+#     with st.expander(f"ℹ️ {n_split} employee(s) changed manager mid-month — their hours are split by days under each manager", expanded=False):
+#         st.caption("Each employee's monthly hours are pro-rated by the number of calendar days spent under each manager (a reporting change takes effect on its date). Rows summing to under 100% had unassigned days that were dropped.")
+#         st.dataframe(split_df, use_container_width=True, hide_index=True)
 
 # ---------------- Calculate ----------------
 if st.button("Calculate bonuses", type="primary"):
     active_rates = _collect_person_rates()
+    # st.write("DEBUG ACTIVE RATES")
+    # st.write(active_rates)
     excluded = _excluded_ids()
 
-    bonus_parts = [
-        apply_rates_month(
-            hours_by_month[m], segments_by_month[m], hierarchy_by_month[m],
-            active_rates, m, exclude_ids=excluded,
+    # bonus_parts = [
+    #     apply_rates_month(
+    #         hours_by_month[m], segments_by_month[m], hierarchy_by_month[m],
+    #         active_rates, m, exclude_ids=excluded,
+    #     )
+    #     for m in selected_months
+    # ]
+
+
+    #Neha
+    new_bonus_parts = [
+        apply_rates_manager_hours(
+            daily_attribution_by_month[m],
+            hierarchy_by_month[m],
+            active_rates,
+            m,
+            exclude_ids=excluded,
         )
         for m in selected_months
     ]
-    bonus_rows = pd.concat(bonus_parts, ignore_index=True) if bonus_parts else pd.DataFrame()
-    summary_by_basis = earner_summary(bonus_rows)
-    totals = earner_totals(bonus_rows)
 
-    attribution_full = pd.concat(
-        [
-            attribution_detail(hours_by_month[m], segments_by_month[m], hierarchy_by_month[m], m)
-            for m in selected_months
-        ],
-        ignore_index=True,
+    new_bonus_rows = (
+        pd.concat(new_bonus_parts, ignore_index=True)
+        if new_bonus_parts
+        else pd.DataFrame()
     )
-    present = emp_view[["Employee ID", "Month", "Present Days"]].drop_duplicates(["Employee ID", "Month"])
-    attribution_full = attribution_full.merge(present, on=["Employee ID", "Month"], how="left")
-    attribution_full = attribution_full.sort_values(
-        ["Director Name", "PL Name", "L1 Name", "L2 Name", "Employee ID", "Month"]
-    ).reset_index(drop=True)
 
-    attribution_full = attribution_full.rename(columns={
-        "Attributed Billable": "Billable",
-        "Attributed Non-Billable": "Non-Billable",
-        "Attributed Bench": "Bench",
-    })
+    # #Temporary
+    # st.write("NEW BONUS ROW COLUMNS")
+    # st.write(new_bonus_rows.columns.tolist())
+    # #Temporary
 
-    # Bonus (money) columns for the breakdown = hours × the DIRECT manager's direct rate.
-    def _rate(person_id, kind, bucket):
-        if pd.isna(person_id):
-            return 0.0
-        entry = active_rates.get(str(int(person_id)), {})
-        return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
+    # ---------------------------------------------------------
+    # NEW: Aggregate calculated bonuses by earner and month
+    # ---------------------------------------------------------
+    new_bonus_summary = (
+    new_bonus_rows
+    .groupby(
+        ["Earner ID", "Earner Name", "Level", "Basis", "Month"],
+        as_index=False,
+    )[
+        [
+            "Billable_Hrs",
+            "NonBillable_Hrs",
+            "Bench_Hrs",
+            "Billable_Bonus",
+            "NonBillable_Bonus",
+            "Bench_Bonus",
+            "Total_Bonus",
+        ]
+    ]
+    .sum()
+)
 
-    for bkt in BUCKETS:
-        attribution_full[f"Bonus {bkt}"] = attribution_full.apply(
-            lambda r: r[bkt] * _rate(r["Direct Manager ID"], "direct", bkt), axis=1
+    # st.write("NEW BONUS SUMMARY")
+    # st.dataframe(
+    #     new_bonus_summary,
+    #     use_container_width=True,
+    # )
+
+
+   
+
+    #Temporary
+
+    
+
+    # st.write("NEW BONUS SUMMARY")
+    # st.dataframe(new_bonus_summary, use_container_width=True)
+    # st.write("NEW manager-based bonus calculation")
+    # # st.dataframe(new_bonus_rows)
+
+    # st.write("NEW bonus rows for Ishaan")
+    # st.dataframe(
+    #     new_bonus_rows[
+    #         new_bonus_rows["Earner Name"].str.contains(
+    #             "Ishaan",
+    #             case=False,
+    #             na=False
+    #         )
+    #     ]
+    # )
+    #Temporary
+
+    # bonus_rows = pd.concat(bonus_parts, ignore_index=True) if bonus_parts else pd.DataFrame()
+
+    # #Temporary
+    # st.write("OLD bonus rows for Ishaan")
+    # st.dataframe(
+    #     bonus_rows[
+    #         bonus_rows["Earner Name"].str.contains(
+    #             "Ishaan",
+    #             case=False,
+    #             na=False
+    #         )
+    #     ]
+    # )
+    # #Temporary
+    summary_by_basis = earner_summary(new_bonus_rows)
+    totals = earner_totals(new_bonus_rows)
+
+    # attribution_full = pd.concat(
+    #     [
+    #         attribution_detail(hours_by_month[m], segments_by_month[m], hierarchy_by_month[m], m)
+    #         for m in selected_months
+    #     ],
+    #     ignore_index=True,
+    # )
+
+    
+    # present = emp_view[["Employee ID", "Month", "Present Days"]].drop_duplicates(["Employee ID", "Month"])
+    # attribution_full = attribution_full.merge(present, on=["Employee ID", "Month"], how="left")
+    # attribution_full = attribution_full.sort_values(
+    #     ["Director Name", "PL Name", "L1 Name", "L2 Name", "Employee ID", "Month"]
+    # ).reset_index(drop=True)
+
+    # attribution_full = attribution_full.rename(columns={
+    #     "Attributed Billable": "Billable",
+    #     "Attributed Non-Billable": "Non-Billable",
+    #     "Attributed Bench": "Bench",
+    # })
+
+
+    # ---------------------------------------------------------
+    # NEW attribution table based on actual manager-attributed hours
+    # ---------------------------------------------------------
+
+    new_attribution_parts = []
+
+    for m in selected_months:
+        df = daily_attribution_by_month[m].copy()
+
+        df = df.rename(
+            columns={
+                "Manager ID": "Direct Manager ID",
+                "Manager Name": "Direct Manager Name",
+                "Manager Level": "Direct Manager Level",
+            }
         )
 
-    # Add Direct/Indirect/Total Bonus per row
-    attribution_full["Direct Bonus"] = (
-        attribution_full["Bonus Billable"] + attribution_full["Bonus Non-Billable"] + attribution_full["Bonus Bench"]
+        df["Billable"] = pd.to_numeric(
+            df["Billable"], errors="coerce"
+        ).fillna(0)
+
+        df["Non-Billable"] = pd.to_numeric(
+            df["Non-Billable"], errors="coerce"
+        ).fillna(0)
+
+        df["Bench"] = pd.to_numeric(
+            df["Bench"], errors="coerce"
+        ).fillna(0)
+
+        new_attribution_parts.append(
+            df[
+                [
+                    "Month",
+                    "Employee ID",
+                    "Employee Name",
+                    "Employee Level",
+                    "Direct Manager ID",
+                    "Direct Manager Name",
+                    "Direct Manager Level",
+                    "PL (indirect) ID",
+                    "Present Days",
+                    "Expected Hours",
+                    "Actual Hours",
+                    "Hours Review",
+                    "Billable",
+                    "Non-Billable",
+                    "Bench",
+                ]
+            ]
+        )
+
+        new_attribution_full = pd.concat(
+            new_attribution_parts,
+            ignore_index=True,
+        )
+
+
+    
+
+    #Temporary
+
+    
+    # st.write("NEW Attribution Results")
+    # st.dataframe(new_attribution_full, use_container_width=True)
+
+    
+    #Temporary
+    # ---------------------------------------------------------
+    # Calculate row-level bonuses from actual manager-attributed hours
+    # ---------------------------------------------------------
+
+    def _new_rate(person_id, kind, bucket):
+        if pd.isna(person_id):
+            return 0.0
+
+        entry = active_rates.get(str(int(person_id)), {})
+
+        return float(
+            (entry.get(kind, {}) if isinstance(entry, dict) else {})
+            .get(bucket, 0) or 0
+        )
+
+
+    # Direct bonus based on the actual hours attributed to the direct manager
+    for bkt in BUCKETS:
+        new_attribution_full[f"Bonus {bkt}"] = new_attribution_full.apply(
+            lambda r: r[bkt]
+            * _new_rate(
+                r["Direct Manager ID"],
+                "direct",
+                bkt,
+            ),
+            axis=1,
+        )
+
+    new_attribution_full["Direct Bonus"] = (
+        new_attribution_full["Bonus Billable"]
+        + new_attribution_full["Bonus Non-Billable"]
+        + new_attribution_full["Bonus Bench"]
     )
-    # Indirect Bonus: for rows where employee is L2 or below, calculate PL's indirect earnings
-    attribution_full["Indirect Bonus"] = attribution_full.apply(
+
+
+    # Indirect bonus based on the actual hours attributed to the employee's PL
+    new_attribution_full["Indirect Bonus"] = new_attribution_full.apply(
         lambda r: (
-            r["Billable"] * _rate(r["PL (indirect) ID"], "indirect", "Billable")
-            + r["Non-Billable"] * _rate(r["PL (indirect) ID"], "indirect", "Non-Billable")
-            + r["Bench"] * _rate(r["PL (indirect) ID"], "indirect", "Bench")
-        ) if pd.notna(r["PL (indirect) ID"]) else 0.0,
+            r["Billable"] * _new_rate(
+                r["PL (indirect) ID"],
+                "indirect",
+                "Billable",
+            )
+            + r["Non-Billable"] * _new_rate(
+                r["PL (indirect) ID"],
+                "indirect",
+                "Non-Billable",
+            )
+            + r["Bench"] * _new_rate(
+                r["PL (indirect) ID"],
+                "indirect",
+                "Bench",
+            )
+        ),
         axis=1,
     )
-    attribution_full["Total Bonus"] = attribution_full["Direct Bonus"] + attribution_full["Indirect Bonus"]
+
+
+    new_attribution_full["Total Bonus"] = (
+        new_attribution_full["Direct Bonus"]
+        + new_attribution_full["Indirect Bonus"]
+    )
+
+    # #Temporary
+    # st.write("NEW Attribution WITH ROW-LEVEL BONUS")
+    # st.dataframe(
+    #     new_attribution_full[
+    #         [
+    #             "Employee ID",
+    #             "Employee Name",
+    #             "Direct Manager ID",
+    #             "Billable",
+    #             "Non-Billable",
+    #             "Bench",
+    #             "Bonus Billable",
+    #             "Bonus Non-Billable",
+    #             "Bonus Bench",
+    #             "Direct Bonus",
+    #             "Indirect Bonus",
+    #             "Total Bonus",
+    #         ]
+    #     ],
+    #     use_container_width=True,
+    # )
+    # #Temporary
+
+    # # Bonus (money) columns for the breakdown = hours × the DIRECT manager's direct rate.
+    # def _rate(person_id, kind, bucket):
+    #     if pd.isna(person_id):
+    #         return 0.0
+    #     entry = active_rates.get(str(int(person_id)), {})
+    #     return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
+
+    # for bkt in BUCKETS:
+    #     attribution_full[f"Bonus {bkt}"] = attribution_full.apply(
+    #         lambda r: r[bkt] * _rate(r["Direct Manager ID"], "direct", bkt), axis=1
+    #     )
+
+    # # Add Direct/Indirect/Total Bonus per row
+    # attribution_full["Direct Bonus"] = (
+    #     attribution_full["Bonus Billable"] + attribution_full["Bonus Non-Billable"] + attribution_full["Bonus Bench"]
+    # )
+    # # Indirect Bonus: for rows where employee is L2 or below, calculate PL's indirect earnings
+    # attribution_full["Indirect Bonus"] = attribution_full.apply(
+    #     lambda r: (
+    #         r["Billable"] * _rate(r["PL (indirect) ID"], "indirect", "Billable")
+    #         + r["Non-Billable"] * _rate(r["PL (indirect) ID"], "indirect", "Non-Billable")
+    #         + r["Bench"] * _rate(r["PL (indirect) ID"], "indirect", "Bench")
+    #     ) if pd.notna(r["PL (indirect) ID"]) else 0.0,
+    #     axis=1,
+    # )
+    # attribution_full["Total Bonus"] = attribution_full["Direct Bonus"] + attribution_full["Indirect Bonus"]
 
     # id -> "Name" and "Level" for building the team-filter options
     earner_name = dict(zip(earners["Person ID"].astype(int), earners["Person Name"]))
@@ -498,7 +1117,7 @@ if st.button("Calculate bonuses", type="primary"):
     st.session_state["results"] = {
         "totals": totals,
         "summary_by_basis": summary_by_basis,
-        "attribution_full": attribution_full,
+        "attribution_full": new_attribution_full,
         "active_rates": active_rates,
         "earner_name": earner_name,
         "earner_level": earner_level,
@@ -524,13 +1143,34 @@ if "results" in st.session_state:
     file_tag = R["file_tag"]
     res_year = R["year"]
 
+    # DISPLAY_COLS = [
+    #     "Month", "Employee Name", "Employee Level",
+    #     "Director Name", "PL Name", "L1 Name", "L2 Name", "Present Days",
+    #     "Share %", "Billable", "Non-Billable", "Bench",
+    #     "Bonus Billable", "Bonus Non-Billable", "Bonus Bench",
+    #     "Direct Bonus", "Indirect Bonus",
+    # ]
     DISPLAY_COLS = [
-        "Month", "Employee Name", "Employee Level",
-        "Director Name", "PL Name", "L1 Name", "L2 Name", "Present Days",
-        "Share %", "Billable", "Non-Billable", "Bench",
-        "Bonus Billable", "Bonus Non-Billable", "Bonus Bench",
-        "Direct Bonus", "Indirect Bonus",
-    ]
+    "Month",
+    "Employee ID",
+    "Employee Name",
+    "Direct Manager ID",
+    "Direct Manager Name",
+    "Present Days",
+    "Expected Hours",
+    "Actual Hours",
+    "Hours Review",
+    "Billable",
+    "Non-Billable",
+    "Bench",
+    "Bonus Billable",
+    "Bonus Non-Billable",
+    "Bonus Bench",
+    "Direct Bonus",
+    "Indirect Bonus",
+    "Total Bonus",
+]
+
     attribution_df = attribution_full[DISPLAY_COLS].reset_index(drop=True)
 
     if R["excluded"]:
@@ -553,19 +1193,37 @@ if "results" in st.session_state:
     # ---------------- Per-employee breakdown ----------------
     st.subheader("Per-employee breakdown")
     st.caption(
-        "One row per employee-month **per manager they reported to**. "
-        "Hours shown are the employee's approved *hours* × their day-share. "
-        "**Bonus** = those hours × the **direct manager's** rate for that category "
-        "(i.e. the money this employee's work earns their direct manager). "
-        "The PL's separate indirect earning is shown in the Earner tables and the manager team-filter below."
-    )
+    "One row per employee-month **per manager they reported to**. "
+    "Present Days and hours are based on the dates the employee was assigned to that manager. "
+    "**Bonus** is calculated from the actual hours attributed to that manager "
+    "using the applicable Direct or Indirect rate. "
+    "The PL's separate indirect earning is shown in the Earner tables and the manager team-filter below."
+)
     attr_cfg = {
         "Employee Level": st.column_config.Column(help="This employee's level for the given segment (one below their manager)."),
         "Share %": st.column_config.NumberColumn(help="Percent of the month's calendar days the employee spent under this manager chain.", format="%.1f"),
-        "Present Days": st.column_config.NumberColumn(help="Employee's attendance for the month (P=1, 0.5P=0.5, else 0). Same for all segment rows of an employee-month."),
-        "Billable": st.column_config.NumberColumn(help="Approved Billable HOURS × Share%.", format="%.2f"),
-        "Non-Billable": st.column_config.NumberColumn(help="Approved Non-Billable HOURS × Share%.", format="%.2f"),
-        "Bench": st.column_config.NumberColumn(help="Approved Bench HOURS × Share%.", format="%.2f"),
+        # "Present Days": st.column_config.NumberColumn(help="Employee's attendance for the month (P=1, 0.5P=0.5, else 0). Same for all segment rows of an employee-month."),
+        # "Billable": st.column_config.NumberColumn(help="Approved Billable HOURS × Share%.", format="%.2f"),
+        # "Non-Billable": st.column_config.NumberColumn(help="Approved Non-Billable HOURS × Share%.", format="%.2f"),
+        # "Bench": st.column_config.NumberColumn(help="Approved Bench HOURS × Share%.", format="%.2f"),
+        "Present Days": st.column_config.NumberColumn(
+    help="Attendance days while the employee was assigned to this manager. P=1, 0.5P=0.5, otherwise 0.",
+),
+
+"Billable": st.column_config.NumberColumn(
+    help="Actual approved Billable hours attributed to this manager.",
+    format="%.2f",
+),
+
+"Non-Billable": st.column_config.NumberColumn(
+    help="Actual approved Non-Billable hours attributed to this manager.",
+    format="%.2f",
+),
+
+"Bench": st.column_config.NumberColumn(
+    help="Actual approved Bench hours attributed to this manager.",
+    format="%.2f",
+),
         "Bonus Billable": st.column_config.NumberColumn(help="MONEY = Billable hours × direct manager's Billable rate.", format="%.2f"),
         "Bonus Non-Billable": st.column_config.NumberColumn(help="MONEY = Non-Billable hours × direct manager's Non-Billable rate.", format="%.2f"),
         "Bonus Bench": st.column_config.NumberColumn(help="MONEY = Bench hours × direct manager's Bench rate.", format="%.2f"),
@@ -582,7 +1240,18 @@ if "results" in st.session_state:
         disabled=disabled_cols,
         key="per_emp_breakdown_editor",
     )
-
+    # ---------------- Full Excel export ----------------
+    def _write_with_totals(writer, df: pd.DataFrame, sheet_name: str):
+        """Write DataFrame to Excel with a total row for numeric columns."""
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        if not numeric_cols:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            return
+        total_row = {col: ("TOTAL" if col == df.columns[0] else "") for col in df.columns}
+        for col in numeric_cols:
+            total_row[col] = df[col].sum()
+        df_with_total = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+        df_with_total.to_excel(writer, sheet_name=sheet_name, index=False)
     # ---------------- Manager team-contribution filter + scoped Excel download ----------------
     st.markdown("**Show a manager's team contribution and download it**")
     st.caption(
@@ -609,11 +1278,16 @@ if "results" in st.session_state:
         key="mgr_multiselect",
     )
 
-    def _rate(person_id, kind, bucket):
+    def _new_rate(person_id, kind, bucket):
         if pd.isna(person_id):
             return 0.0
+
         entry = active_rates.get(str(int(person_id)), {})
-        return float((entry.get(kind, {}) if isinstance(entry, dict) else {}).get(bucket, 0) or 0)
+
+        return float(
+            (entry.get(kind, {}) if isinstance(entry, dict) else {})
+            .get(bucket, 0) or 0
+        )
 
     TEAM_COLS = ["Manager ID", "Manager", "Basis"] + DISPLAY_COLS
 
@@ -631,9 +1305,25 @@ if "results" in st.session_state:
         # indirect rate on Indirect rows.
         for bkt in BUCKETS:
             team[f"Bonus {bkt}"] = team.apply(
-                lambda r: r[bkt] * _rate(mid, "direct" if r["Basis"] == "Direct" else "indirect", bkt),
+                lambda r: r[bkt] * _new_rate(mid, "direct" if r["Basis"] == "Direct" else "indirect", bkt),
                 axis=1,
             )
+        team["Direct Bonus"] = 0.0
+        team["Indirect Bonus"] = 0.0
+
+        team.loc[team["Basis"] == "Direct", "Direct Bonus"] = (
+            team.loc[team["Basis"] == "Direct", "Bonus Billable"]
+            + team.loc[team["Basis"] == "Direct", "Bonus Non-Billable"]
+            + team.loc[team["Basis"] == "Direct", "Bonus Bench"]
+        )
+
+        team.loc[team["Basis"] == "Indirect", "Indirect Bonus"] = (
+            team.loc[team["Basis"] == "Indirect", "Bonus Billable"]
+            + team.loc[team["Basis"] == "Indirect", "Bonus Non-Billable"]
+            + team.loc[team["Basis"] == "Indirect", "Bonus Bench"]
+        )
+
+        team["Total Bonus"] = team["Direct Bonus"] + team["Indirect Bonus"]
         return team[TEAM_COLS]
 
     if picked:
@@ -679,18 +1369,18 @@ if "results" in st.session_state:
                 key="team_download",
             )
 
-    # ---------------- Full Excel export ----------------
-    def _write_with_totals(writer, df: pd.DataFrame, sheet_name: str):
-        """Write DataFrame to Excel with a total row for numeric columns."""
-        numeric_cols = df.select_dtypes(include="number").columns.tolist()
-        if not numeric_cols:
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-            return
-        total_row = {col: ("TOTAL" if col == df.columns[0] else "") for col in df.columns}
-        for col in numeric_cols:
-            total_row[col] = df[col].sum()
-        df_with_total = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
-        df_with_total.to_excel(writer, sheet_name=sheet_name, index=False)
+    # # ---------------- Full Excel export ----------------
+    # def _write_with_totals(writer, df: pd.DataFrame, sheet_name: str):
+    #     """Write DataFrame to Excel with a total row for numeric columns."""
+    #     numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    #     if not numeric_cols:
+    #         df.to_excel(writer, sheet_name=sheet_name, index=False)
+    #         return
+    #     total_row = {col: ("TOTAL" if col == df.columns[0] else "") for col in df.columns}
+    #     for col in numeric_cols:
+    #         total_row[col] = df[col].sum()
+    #     df_with_total = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+    #     df_with_total.to_excel(writer, sheet_name=sheet_name, index=False)
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:

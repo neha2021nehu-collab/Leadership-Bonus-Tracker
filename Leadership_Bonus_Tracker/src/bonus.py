@@ -225,6 +225,206 @@ def apply_rates_month(hours_df: pd.DataFrame, segments_df: pd.DataFrame, hierarc
     return pd.DataFrame(records)
 
 
+#Neha 
+# def apply_rates_manager_hours(
+#     manager_final_df: pd.DataFrame,
+#     hierarchy_df: pd.DataFrame,
+#     person_rates: dict,
+#     month_label,
+#     exclude_ids: set | None = None,
+# ) -> pd.DataFrame:
+#     """
+#     Apply bonus rates to hours that have already been attributed
+#     to the correct manager based on the employee's date-wise
+#     reporting relationship.
+#     """
+#     exclude_ids = {int(x) for x in (exclude_ids or set())}
+
+#     node_by_id = hierarchy_df.set_index("Person ID").to_dict("index")
+
+#     records = []
+
+#     for _, row in manager_final_df.iterrows():
+#         if pd.isna(row["Employee ID"]) or pd.isna(row["Manager ID"]):
+#             continue
+
+#         employee_id = int(row["Employee ID"])
+#         manager_id = int(row["Manager ID"])
+
+#         manager_node = node_by_id.get(manager_id)
+
+#         if not manager_node:
+#             continue
+
+#         if manager_id in exclude_ids:
+#             continue
+
+#         hours = {
+#             "Billable": float(row.get("Billable Hours", 0) or 0),
+#             "Non-Billable": float(row.get("Non-Billable Hours", 0) or 0),
+#             "Bench": float(row.get("Bench Hours", 0) or 0),
+#         }
+
+#         if sum(hours.values()) == 0:
+#             continue
+
+#         level = manager_node.get("Level")
+
+#         # DIRECT BONUS
+#         if level in DIRECT_EARNING_LEVELS:
+#             _add_record(
+#                 records,
+#                 manager_id,
+#                 manager_node,
+#                 "Direct",
+#                 month_label,
+#                 hours,
+#                 person_rate_for(
+#                     person_rates,
+#                     manager_id,
+#                     "direct",
+#                 ),
+#             )
+
+#         # INDIRECT BONUS
+#         if level not in ("Director", "PL"):
+#             pl_id = manager_node.get("PL ID")
+
+#             if pd.notna(pl_id):
+#                 pl_id = int(pl_id)
+#                 pl_node = node_by_id.get(pl_id)
+
+#                 if pl_node and pl_id not in exclude_ids:
+#                     _add_record(
+#                         records,
+#                         pl_id,
+#                         pl_node,
+#                         "Indirect (PL)",
+#                         month_label,
+#                         hours,
+#                         person_rate_for(
+#                             person_rates,
+#                             pl_id,
+#                             "indirect",
+#                         ),
+#                     )
+
+#     if not records:
+#         return pd.DataFrame(columns=EMPTY_BONUS_COLS)
+
+#     return pd.DataFrame(records)
+
+def apply_rates_manager_hours(
+    manager_final_df: pd.DataFrame,
+    hierarchy_df: pd.DataFrame,
+    person_rates: dict,
+    month_label,
+    exclude_ids: set | None = None,
+) -> pd.DataFrame:
+    """
+    Apply bonus rates to actual hours already attributed
+    to the correct manager based on the employee's date-wise
+    reporting relationship.
+    """
+
+    exclude_ids = {int(x) for x in (exclude_ids or set())}
+
+    # Normalize manager/person IDs so "1054" and 1054 match
+    hierarchy_lookup = hierarchy_df.copy()
+    hierarchy_lookup["Person ID"] = pd.to_numeric(
+        hierarchy_lookup["Person ID"],
+        errors="coerce",
+    )
+
+    node_by_id = {}
+
+    for _, node in hierarchy_lookup.iterrows():
+        if pd.notna(node["Person ID"]):
+            node_by_id[int(node["Person ID"])] = node.to_dict()
+
+    records = []
+
+    for _, row in manager_final_df.iterrows():
+
+        if pd.isna(row["Employee ID"]) or pd.isna(row["Manager ID"]):
+            continue
+
+        employee_id = int(row["Employee ID"])
+        manager_id = int(row["Manager ID"])
+
+        manager_node = node_by_id.get(manager_id)
+
+        if not manager_node:
+            continue
+
+        if manager_id in exclude_ids:
+            continue
+
+        # These are the NEW manager-attributed actual hours
+        hours = {
+            "Billable": float(row.get("Billable", 0) or 0),
+            "Non-Billable": float(row.get("Non-Billable", 0) or 0),
+            "Bench": float(row.get("Bench", 0) or 0),
+        }
+
+        # Nothing to calculate if this manager has no actual hours
+        if sum(hours.values()) == 0:
+            continue
+
+        level = manager_node.get("Level")
+
+        # -------------------------------------------------
+        # DIRECT BONUS
+        # -------------------------------------------------
+        if level in DIRECT_EARNING_LEVELS:
+            _add_record(
+                records,
+                manager_id,
+                manager_node,
+                "Direct",
+                month_label,
+                hours,
+                person_rate_for(
+                    person_rates,
+                    manager_id,
+                    "direct",
+                ),
+            )
+
+        # -------------------------------------------------
+        # INDIRECT BONUS
+        # -------------------------------------------------
+        if level not in ("Director", "PL"):
+
+            pl_id = manager_node.get("PL ID")
+
+            if pd.notna(pl_id):
+
+                pl_id = int(pl_id)
+
+                pl_node = node_by_id.get(pl_id)
+
+                if pl_node and pl_id not in exclude_ids:
+                    _add_record(
+                        records,
+                        pl_id,
+                        pl_node,
+                        "Indirect (PL)",
+                        month_label,
+                        hours,
+                        person_rate_for(
+                            person_rates,
+                            pl_id,
+                            "indirect",
+                        ),
+                    )
+
+    if not records:
+        return pd.DataFrame(columns=EMPTY_BONUS_COLS)
+
+    return pd.DataFrame(records)
+
+
 def _add_record(records, earner_id, earner_node, basis, month, hrs, rate_set):
     b = float(rate_set.get("Billable", 0) or 0)
     nb = float(rate_set.get("Non-Billable", 0) or 0)

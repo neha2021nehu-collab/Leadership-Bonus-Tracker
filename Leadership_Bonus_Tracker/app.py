@@ -279,7 +279,7 @@ for m in selected_months:
             
         })
     )
-
+    #Changes
     manager_category_hours = (
     daily_manager_timesheet
     .groupby(

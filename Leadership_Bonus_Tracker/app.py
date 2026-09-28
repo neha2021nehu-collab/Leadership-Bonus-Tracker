@@ -313,6 +313,7 @@ for m in selected_months:
     ],
     how="left"
 )
+   
     manager_final_by_month[m] = manager_final
 
     for col in ["Billable Hours", "Non-Billable Hours", "Bench Hours"]:
@@ -780,6 +781,17 @@ if not orphans.empty:
 #         st.caption("Each employee's monthly hours are pro-rated by the number of calendar days spent under each manager (a reporting change takes effect on its date). Rows summing to under 100% had unassigned days that were dropped.")
 #         st.dataframe(split_df, use_container_width=True, hide_index=True)
 
+
+
+#Neha - 28th September 2026
+# Employee-manager specific exclusions
+excluded_employee_manager = st.session_state.get(
+    "employee_manager_exclusions",
+    set()
+
+)
+st.write("DEBUG excluded employee-manager:", excluded_employee_manager)
+
 # ---------------- Calculate ----------------
 if st.button("Calculate bonuses", type="primary"):
     active_rates = _collect_person_rates()
@@ -797,22 +809,53 @@ if st.button("Calculate bonuses", type="primary"):
 
 
     #Neha
-    new_bonus_parts = [
-        apply_rates_manager_hours(
-            daily_attribution_by_month[m],
+    # new_bonus_parts = [
+    #     apply_rates_manager_hours(
+    #         daily_attribution_by_month[m],
+    #         hierarchy_by_month[m],
+    #         active_rates,
+    #         m,
+    #         exclude_ids=excluded,
+    #     )
+    #     for m in selected_months
+    # ]
+
+    #Neha - 28/09/2026
+    new_bonus_parts = []
+
+    for m in selected_months:
+        calc_df = daily_attribution_by_month[m].copy()
+
+        # Remove only the employee-manager combinations
+        # that were explicitly excluded in the Per Employee Breakdown.
+        if excluded_employee_manager:
+            calc_df = calc_df[
+                ~calc_df.apply(
+                    lambda r: (
+                        int(r["Employee ID"]),
+                        int(r["Manager ID"])
+                    ) in excluded_employee_manager,
+                    axis=1,
+                )
+            ].copy()
+
+        month_bonus = apply_rates_manager_hours(
+            calc_df,
             hierarchy_by_month[m],
             active_rates,
             m,
             exclude_ids=excluded,
         )
-        for m in selected_months
-    ]
+
+        new_bonus_parts.append(month_bonus)
 
     new_bonus_rows = (
         pd.concat(new_bonus_parts, ignore_index=True)
         if new_bonus_parts
         else pd.DataFrame()
     )
+    st.write("DEBUG bonus rows after exclusion:")
+    st.dataframe(new_bonus_rows)
 
     # #Temporary
     # st.write("NEW BONUS ROW COLUMNS")
@@ -1231,15 +1274,72 @@ if "results" in st.session_state:
         "Indirect Bonus": st.column_config.NumberColumn(help="Indirect Bonus earned by PL ancestor from this segment (if employee is L2 or below).", format="%.2f"),
         "Total Bonus": st.column_config.NumberColumn(help="Direct Bonus + Indirect Bonus for this segment.", format="%.2f"),
     }
-    disabled_cols = {c: True for c in DISPLAY_COLS}
-    edited_df = st.data_editor(
-        attribution_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=attr_cfg,
-        disabled=disabled_cols,
-        key="per_emp_breakdown_editor",
+    #Neha Changes Monday 28th September
+    # disabled_cols = {c: True for c in DISPLAY_COLS}
+    # edited_df = st.data_editor(
+    #     attribution_df,
+    #     use_container_width=True,
+    #     hide_index=True,
+    #     column_config=attr_cfg,
+    #     disabled=disabled_cols,
+    #     key="per_emp_breakdown_editor",
+    # )
+    # Employee-manager specific Include/Exclude control
+    attribution_df["Include"] = True
+
+    attr_cfg["Include"] = st.column_config.CheckboxColumn(
+        "Include",
+        help="Uncheck to exclude this employee's hours from this specific manager's bonus calculation.",
+        default=True,
     )
+
+    disabled_cols = {c: True for c in DISPLAY_COLS}
+    def _update_employee_manager_exclusions():
+        edited_state = st.session_state.get("per_emp_breakdown_editor", {})
+        edited_rows = edited_state.get("edited_rows", {})
+
+        exclusions = set()
+
+        for row_index, changes in edited_rows.items():
+            if changes.get("Include") is False:
+                row = attribution_df.iloc[int(row_index)]
+
+                exclusions.add(
+                    (
+                        int(row["Employee ID"]),
+                        int(row["Direct Manager ID"])
+                    )
+                )
+
+        st.session_state["employee_manager_exclusions"] = exclusions
+    edited_df = st.data_editor(
+    attribution_df,
+    use_container_width=True,
+    hide_index=True,
+    column_config=attr_cfg,
+    disabled=disabled_cols,
+    key="per_emp_breakdown_editor",
+    on_change=_update_employee_manager_exclusions,
+)
+    # st.session_state["employee_manager_exclusions"] = {
+    #     (
+    #         int(row["Employee ID"]),
+    #         int(row["Direct Manager ID"])
+    #     )
+    #     for _, row in edited_df.iterrows()
+    #     if not bool(row["Include"])
+    # }
+    # # Employee-manager specific exclusions
+    # excluded_employee_manager = set()
+
+    # for _, row in edited_df.iterrows():
+    #     if not bool(row["Include"]):
+    #         excluded_employee_manager.add(
+    #             (
+    #                 int(row["Employee ID"]),
+    #                 int(row["Direct Manager ID"])
+    #             )
+    #         )
     # ---------------- Full Excel export ----------------
     def _write_with_totals(writer, df: pd.DataFrame, sheet_name: str):
         """Write DataFrame to Excel with a total row for numeric columns."""

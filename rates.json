@@ -1,0 +1,30 @@
+{
+  "persons": {
+    "1054": {
+      "direct": {
+        "Billable": 500.0,
+        "Non-Billable": 0.0,
+        "Bench": 0.0
+      },
+      "indirect": {
+        "Billable": 100.0,
+        "Non-Billable": 50.0,
+        "Bench": 25.0
+      }
+    },
+    "1341": {
+      "direct": {
+        "Billable": 0.0,
+        "Non-Billable": 0.0,
+        "Bench": 0.0
+      }
+    },
+    "1053": {
+      "direct": {
+        "Billable": 0.0,
+        "Non-Billable": 0.0,
+        "Bench": 0.0
+      }
+    }
+  }
+}

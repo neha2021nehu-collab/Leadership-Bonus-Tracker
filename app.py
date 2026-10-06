@@ -1273,11 +1273,24 @@ if "results" in st.session_state:
         "Indirect_Bonus": st.column_config.NumberColumn(help="Only PLs earn this — L2 + L3 hours under this PL × their Indirect rate.", format="%.2f"),
         "Total_Bonus": st.column_config.NumberColumn(help="Direct + Indirect.", format="%.2f"),
     }
-    st.dataframe(totals, use_container_width=True, hide_index=True, column_config=totals_cfg)
+
+    visible_totals_columns = st.multiselect(
+    "Columns to display - Earner totals",
+    options=totals.columns.tolist(),
+    default=totals.columns.tolist(),
+    key="visible_totals_columns",
+)
+    st.dataframe(totals[visible_totals_columns], use_container_width=True, hide_index=True, column_config=totals_cfg)
     st.markdown(f"**Grand total payout: {totals['Total_Bonus'].sum():,.2f}**")
 
     st.subheader("Earner summary by basis")
-    st.dataframe(summary_by_basis, use_container_width=True, hide_index=True)
+    visible_summary_columns = st.multiselect(
+    "Columns to display - Earner summary by basis",
+    options=summary_by_basis.columns.tolist(),
+    default=summary_by_basis.columns.tolist(),
+    key="visible_summary_columns",
+)
+    st.dataframe(summary_by_basis[visible_summary_columns], use_container_width=True, hide_index=True)
 
     # ---------------- Per-employee breakdown ----------------
     st.subheader("Per-employee breakdown")
@@ -1332,6 +1345,21 @@ if "results" in st.session_state:
     # )
     # Employee-manager specific Include/Exclude control
     attribution_df["Include"] = True
+#     visible_columns = st.multiselect(
+#     "Columns to display",
+#     options=DISPLAY_COLS,
+#     default=DISPLAY_COLS,
+#     key="visible_attribution_columns",
+# )
+
+    visible_columns = st.multiselect(
+    "Columns to display",
+    options=DISPLAY_COLS + ["Include"],
+    default=DISPLAY_COLS + ["Include"],
+    key="visible_attribution_columns",
+)
+
+    editor_columns = visible_columns 
 
     attr_cfg["Include"] = st.column_config.CheckboxColumn(
         "Include",
@@ -1358,15 +1386,28 @@ if "results" in st.session_state:
                 )
 
         st.session_state["employee_manager_exclusions"] = exclusions
+#     edited_df = st.data_editor(
+#     attribution_df,
+#     use_container_width=True,
+#     hide_index=True,
+#     column_config=attr_cfg,
+#     disabled=disabled_cols,
+#     key="per_emp_breakdown_editor",
+#     on_change=_update_employee_manager_exclusions,
+# )
+
     edited_df = st.data_editor(
-    attribution_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config=attr_cfg,
-    disabled=disabled_cols,
-    key="per_emp_breakdown_editor",
-    on_change=_update_employee_manager_exclusions,
-)
+        attribution_df[editor_columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config=attr_cfg,
+        disabled=disabled_cols,
+        key="per_emp_breakdown_editor",
+        on_change=_update_employee_manager_exclusions,
+    )
+    # st.write("EDITOR STATE:")
+    # st.json(st.session_state.get("per_emp_breakdown_editor", {}))
+    # st.write(st.session_state.get("per_emp_breakdown_editor"))
     # st.session_state["employee_manager_exclusions"] = {
     #     (
     #         int(row["Employee ID"]),
@@ -1389,7 +1430,30 @@ if "results" in st.session_state:
     # ---------------- Full Excel export ----------------
     def _write_with_totals(writer, df: pd.DataFrame, sheet_name: str):
         """Write DataFrame to Excel with a total row for numeric columns."""
-        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        # numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        # money_cols = [
+        #     "Billable_Bonus",
+        #     "NonBillable_Bonus",
+        #     "Bench_Bonus",
+        #     "Total_Bonus"
+        #     "Bonus Billable",
+        #     "Bonus_Billable",
+        #     "Bonus Non-Billable",
+        #     "Bonus Bench",
+        #     "Direct Bonus",
+        #     "Indirect Bonus",
+        #     "Total Bonus",
+        # ]
+
+        money_cols = [
+            col
+            for col in df.columns
+            if "bonus" in str(col).lower()
+        ]
+
+        numeric_cols = money_cols
+
+        # numeric_cols = [col for col in money_cols if col in df.columns]
         if not numeric_cols:
             df.to_excel(writer, sheet_name=sheet_name, index=False)
             return
@@ -1530,7 +1594,7 @@ if "results" in st.session_state:
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-        _write_with_totals(w, totals, "Earner Totals")
+        _write_with_totals(w, totals[visible_totals_columns], "Earner Totals")
         _write_with_totals(w, summary_by_basis, "Earner by Basis")
         _write_with_totals(w, edited_df, "Employee Breakdown")
         _write_with_totals(w, rates_used_df, "Rates Used")

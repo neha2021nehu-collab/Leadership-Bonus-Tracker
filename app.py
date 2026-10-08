@@ -12,8 +12,25 @@ from src.bonus import (
     orphan_hours, apply_rates_manager_hours
 )
 from src.attendance import load_attendance, parse_filename
+from streamlit_sortables import sort_items
 
 st.set_page_config(page_title="Leadership Bonus Tracker", layout="wide")
+
+# Ensure custom component iframes (like streamlit-sortables) inside expanders do not collapse to 0 height
+st.markdown(
+    """
+    <style>
+    div[data-testid="stExpander"] iframe,
+    details[data-testid="stExpander"] iframe,
+    iframe[title*="sortable_items"],
+    iframe[title*="streamlit_sortables"] {
+        min-height: 280px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("Leadership Bonus Tracker")
 
 st.markdown(
@@ -1274,23 +1291,195 @@ if "results" in st.session_state:
         "Total_Bonus": st.column_config.NumberColumn(help="Direct + Indirect.", format="%.2f"),
     }
 
-    visible_totals_columns = st.multiselect(
-    "Columns to display - Earner totals",
-    options=totals.columns.tolist(),
-    default=totals.columns.tolist(),
-    key="visible_totals_columns",
-)
-    st.dataframe(totals[visible_totals_columns], use_container_width=True, hide_index=True, column_config=totals_cfg)
+#     visible_totals_columns = st.multiselect(
+#     "Columns to display - Earner totals",
+#     options=totals.columns.tolist(),
+#     default=totals.columns.tolist(),
+#     key="visible_totals_columns",
+# )
+#     st.dataframe(totals[visible_totals_columns], use_container_width=True, hide_index=True, column_config=totals_cfg)
+    # # ---------------- Earner Totals Column Customization ----------------
+    # with st.expander("⚙️ Customize columns / Change layout", expanded=False):
+    #     st.caption(
+    #                 "Drag columns within Selected Columns to change their order. "
+    #                 "Drag columns to Hidden Columns to hide them."
+    #             )
+    #     if "totals_column_layout" not in st.session_state:
+    #         st.session_state["totals_column_layout"] = [
+    #             {
+    #                 "header": "Selected Columns",
+    #                 "items": totals.columns.tolist(),
+    #             },
+    #             {
+    #                 "header": "Hidden Columns",
+    #                 "items": [],
+    #             },
+    #         ]
+
+    #     totals_column_layout = sort_items(
+    #         st.session_state["totals_column_layout"],
+    #         multi_containers=True,
+    #         direction="horizontal",
+    #         custom_style="""
+    #             .sortable-component {
+    #                 background: transparent;
+    #                 border: none;
+    #                 padding: 0;
+    #             }
+
+    #             .sortable-container {
+    #                 background: #262730;
+    #                 border-radius: 8px;
+    #                 padding: 8px;
+    #                 min-height: 70px;
+    #             }
+
+    #             .sortable-container-header {
+    #                 background: transparent;
+    #                 color: white;
+    #                 font-size: 14px;
+    #                 font-weight: 600;
+    #                 padding: 4px 6px;
+    #             }
+
+    #             .sortable-item {
+    #                 background: #ff4b4b;
+    #                 color: white;
+    #                 border-radius: 5px;
+    #                 margin: 3px;
+    #                 padding: 5px 9px;
+    #                 font-size: 12px;
+    #                 display: inline-block;
+    #                 width: auto;
+    #             }
+    #         """,
+    #         key="totals_column_sorter",
+    #     )
+
+    #     st.session_state["totals_column_layout"] = totals_column_layout
+
+    #     visible_totals_columns = totals_column_layout[0]["items"]
+
+    # st.dataframe(
+    #     totals[visible_totals_columns],
+    #     use_container_width=True,
+    #     hide_index=True,
+    #     column_config=totals_cfg,
+    # )
+    # ---------------- Earner Totals Column Customization ----------------
+    with st.expander("⚙️ Customize columns / Change layout", expanded=False):
+
+        st.caption(
+            "Drag columns within Selected Columns to change their order. "
+            "Drag columns to Hidden Columns to hide them."
+        )
+
+        if "totals_column_layout" not in st.session_state:
+            st.session_state["totals_column_layout"] = [
+                {
+                    "header": "Selected Columns",
+                    "items": totals.columns.tolist(),
+                },
+                {
+                    "header": "Hidden Columns",
+                    "items": [],
+                },
+            ]
+
+        totals_column_layout = sort_items(
+            st.session_state["totals_column_layout"],
+            multi_containers=True,
+            key="totals_column_sorter",
+        )
+
+        st.session_state["totals_column_layout"] = totals_column_layout
+
+        visible_totals_columns = totals_column_layout[0]["items"]
+
+    st.dataframe(
+        totals[visible_totals_columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config=totals_cfg,
+    )
     st.markdown(f"**Grand total payout: {totals['Total_Bonus'].sum():,.2f}**")
 
     st.subheader("Earner summary by basis")
-    visible_summary_columns = st.multiselect(
-    "Columns to display - Earner summary by basis",
-    options=summary_by_basis.columns.tolist(),
-    default=summary_by_basis.columns.tolist(),
-    key="visible_summary_columns",
-)
-    st.dataframe(summary_by_basis[visible_summary_columns], use_container_width=True, hide_index=True)
+#     visible_summary_columns = st.multiselect(
+#     "Columns to display - Earner summary by basis",
+#     options=summary_by_basis.columns.tolist(),
+#     default=summary_by_basis.columns.tolist(),
+#     key="visible_summary_columns",
+# )
+#     st.dataframe(summary_by_basis[visible_summary_columns], use_container_width=True, hide_index=True)
+
+    # ---------------- Earner Totals Column Customization ----------------
+    with st.expander("⚙️ Customize columns / Change layout", expanded=False):
+        st.caption(
+                    "Drag columns within Selected Columns to change their order. "
+                    "Drag columns to Hidden Columns to hide them."
+                )
+        if "summary_column_layout" not in st.session_state:
+            st.session_state["summary_column_layout"] = [
+                {
+                    "header": "Selected Columns",
+                    "items": summary_by_basis.columns.tolist(),
+                },
+                {
+                    "header": "Hidden Columns",
+                    "items": [],
+                },
+            ]
+
+        summary_column_layout = sort_items(
+            st.session_state["summary_column_layout"],
+            multi_containers=True,
+            # direction="horizontal",
+            # custom_style="""
+            #     .sortable-component {
+            #         background: transparent;
+            #         border: none;
+            #         padding: 0;
+            #     }
+
+            #     .sortable-container {
+            #         background: #262730;
+            #         border-radius: 8px;
+            #         padding: 8px;
+            #         min-height: 70px;
+            #     }
+
+            #     .sortable-container-header {
+            #         background: transparent;
+            #         color: white;
+            #         font-size: 14px;
+            #         font-weight: 600;
+            #         padding: 4px 6px;
+            #     }
+
+            #     .sortable-item {
+            #         background: #ff4b4b;
+            #         color: white;
+            #         border-radius: 5px;
+            #         margin: 3px;
+            #         padding: 5px 9px;
+            #         font-size: 12px;
+            #         display: inline-block;
+            #         width: auto;
+            #     }
+            # """,
+            key="summary_column_sorter",
+        )
+
+        st.session_state["summary_column_layout"] = summary_column_layout
+
+        visible_summary_columns = summary_column_layout[0]["items"]
+
+    st.dataframe(
+        summary_by_basis[visible_summary_columns],
+        use_container_width=True,
+        hide_index=True,
+    )
 
     # ---------------- Per-employee breakdown ----------------
     st.subheader("Per-employee breakdown")
@@ -1344,7 +1533,7 @@ if "results" in st.session_state:
     #     key="per_emp_breakdown_editor",
     # )
     # Employee-manager specific Include/Exclude control
-    attribution_df["Include"] = True
+    # attribution_df["Include"] = True
 #     visible_columns = st.multiselect(
 #     "Columns to display",
 #     options=DISPLAY_COLS,
@@ -1352,14 +1541,54 @@ if "results" in st.session_state:
 #     key="visible_attribution_columns",
 # )
 
-    visible_columns = st.multiselect(
-    "Columns to display",
-    options=DISPLAY_COLS + ["Include"],
-    default=DISPLAY_COLS + ["Include"],
-    key="visible_attribution_columns",
-)
+#     visible_columns = st.multiselect(
+#     "Columns to display",
+#     options=DISPLAY_COLS + ["Include"],
+#     default=DISPLAY_COLS + ["Include"],
+#     key="visible_attribution_columns",
+# )
 
-    editor_columns = visible_columns 
+#     editor_columns = visible_columns 
+    # Employee-manager specific Include/Exclude control
+    attribution_df["Include"] = True
+
+
+    # ---------------- Per-employee Breakdown Column Customization ----------------
+    # ---------------- Per-employee Breakdown Column Customization ----------------
+    with st.expander("⚙️ Customize columns / Change layout", expanded=False):
+
+        st.caption(
+            "Drag columns within Selected Columns to change their order. "
+            "Drag columns to Hidden Columns to hide them."
+        )
+
+        employee_columns = DISPLAY_COLS + ["Include"]
+
+        # Initialize only once
+        if "employee_layout" not in st.session_state:
+            st.session_state["employee_layout"] = [
+                {
+                    "header": "Selected Columns",
+                    "items": employee_columns.copy(),
+                },
+                {
+                    "header": "Hidden Columns",
+                    "items": [],
+                },
+            ]
+
+        employee_layout = sort_items(
+            st.session_state["employee_layout"],
+            multi_containers=True,
+            key="employee_layout_sorter",
+        )
+
+        st.session_state["employee_layout"] = employee_layout
+
+        visible_columns = employee_layout[0]["items"]
+
+    editor_columns = visible_columns
+
 
     attr_cfg["Include"] = st.column_config.CheckboxColumn(
         "Include",
@@ -1503,8 +1732,26 @@ if "results" in st.session_state:
 
     def _team_rows(mid: int) -> pd.DataFrame:
         direct = attribution_full[attribution_full["Direct Manager ID"].fillna(-1).astype(int) == mid].copy()
+        direct = direct[
+            ~direct.apply(
+                lambda r: (
+                    int(r["Employee ID"]),
+                    int(r["Direct Manager ID"])
+                ) in excluded_employee_manager,
+                axis=1,
+            )
+        ].copy()
         direct["Basis"] = "Direct"
         indirect = attribution_full[attribution_full["PL (indirect) ID"].fillna(-1).astype(int) == mid].copy()
+        indirect = indirect[
+    ~indirect.apply(
+        lambda r: (
+            int(r["Employee ID"]),
+            int(r["Direct Manager ID"])
+        ) in excluded_employee_manager,
+        axis=1,
+    )
+].copy()
         indirect["Basis"] = "Indirect"
         team = pd.concat([direct, indirect], ignore_index=True)
         if team.empty:
@@ -1545,11 +1792,81 @@ if "results" in st.session_state:
             st.warning("The selected manager(s) have no team contribution in this result (e.g. a leaf with no reports).")
         else:
             st.caption(f"{len(mgr_ids)} manager(s) selected · {all_team['Employee ID'].nunique()} reportees · {len(all_team)} rows.")
-            st.dataframe(all_team, use_container_width=True, hide_index=True, column_config=attr_cfg)
+            
+
+            with st.expander("⚙️ Customize Columns", expanded=False):
+
+                st.caption(
+                    "Drag columns within Selected Columns to change their order. "
+                    "Drag columns to Hidden Columns to hide them."
+                )
+
+                if "team_column_layout" not in st.session_state:
+                    st.session_state["team_column_layout"] = [
+                        {
+                            "header": "Selected Columns",
+                            "items": TEAM_COLS.copy(),
+                        },
+                        {
+                            "header": "Hidden Columns",
+                            "items": [],
+                        },
+                    ]
+
+                column_layout = sort_items(
+                    st.session_state["team_column_layout"],
+                    multi_containers=True,
+                    # direction="horizontal",
+                    # custom_style="""
+                    #     .sortable-component {
+                    #         background: transparent;
+                    #         border: none;
+                    #         padding: 0;
+                    #     }
+
+                    #     .sortable-container {
+                    #         background: #262730;
+                    #         border-radius: 8px;
+                    #         padding: 8px;
+                    #         min-height: 70px;
+                    #     }
+
+                    #     .sortable-container-header {
+                    #         background: transparent;
+                    #         color: white;
+                    #         font-size: 14px;
+                    #         font-weight: 600;
+                    #         padding: 4px 6px;
+                    #     }
+
+                    #     .sortable-item {
+                    #         background: #ff4b4b;
+                    #         color: white;
+                    #         border-radius: 5px;
+                    #         margin: 3px;
+                    #         padding: 5px 9px;
+                    #         font-size: 12px;
+                    #         display: inline-block;
+                    #         width: auto;
+                    #     }
+                    # """,
+                    key="team_column_sorter",
+                )
+
+                st.session_state["team_column_layout"] = column_layout
+
+                team_visible_columns = column_layout[0]["items"]
+    
+            st.dataframe(all_team[team_visible_columns], use_container_width=True, hide_index=True, column_config=attr_cfg)
 
             sel_buf = io.BytesIO()
             with pd.ExcelWriter(sel_buf, engine="xlsxwriter") as w:
-                _write_with_totals(w, all_team, "Team Contribution")
+                # _write_with_totals(w, all_team, "Team Contribution")
+                _write_with_totals(
+                    w,
+                    all_team[team_visible_columns],
+                    "Team Contribution"
+                )
                 # Add bonus summary per selected manager
                 for mid in mgr_ids:
                     mgr_totals = totals[totals["Earner ID"] == mid]
@@ -1559,9 +1876,15 @@ if "results" in st.session_state:
                         _write_with_totals(w, mgr_totals, sheet)
                 used = set()
                 for mid in mgr_ids:
+                    # tdf = all_team[all_team["Manager ID"] == mid]
+                    # if tdf.empty:
+                    #     continue
                     tdf = all_team[all_team["Manager ID"] == mid]
+
                     if tdf.empty:
                         continue
+
+                    tdf = tdf[team_visible_columns]
                     nm = earner_name.get(mid, str(mid))
                     sheet = f"{mid} {nm}"[:31]
                     base, k = sheet, 1
@@ -1595,7 +1918,7 @@ if "results" in st.session_state:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
         _write_with_totals(w, totals[visible_totals_columns], "Earner Totals")
-        _write_with_totals(w, summary_by_basis, "Earner by Basis")
+        _write_with_totals(w,  summary_by_basis[visible_summary_columns], "Earner by Basis")
         _write_with_totals(w, edited_df, "Employee Breakdown")
         _write_with_totals(w, rates_used_df, "Rates Used")
     st.download_button(
